@@ -10,6 +10,7 @@ Auto Recon runs a practical Nmap-first workflow, detects Windows/Linux and Activ
 
 - Clean terminal dashboard output with concise module status
 - Full TCP Nmap scan, service detection, default scripts, and vuln scripts
+- Optional targeted UDP scan for high-value ports (`53`, `123`, `161`)
 - Windows/Linux heuristic detection from ports and service banners
 - Active Directory detection from SMB, Kerberos, LDAP, DNS, and related indicators
 - Conditional AD workflow with anonymous and authenticated checks
@@ -21,6 +22,7 @@ Auto Recon runs a practical Nmap-first workflow, detects Windows/Linux and Activ
 - Potential credential and GPP indicator highlighting
 - ADCS / Certificate Services detection
 - Kerberoastable, ASREP roastable, delegation, and privileged group indicators
+- Authenticated BloodHound and Impacket roast collection when credentials are provided
 - Quiet by default: raw tool output is parsed but not printed live
 - Final `TXT` report by default, optional styled `HTML` report
 
@@ -47,6 +49,9 @@ Optional tools used when available:
 - `kerbrute`
 - `ldapdomaindump`
 - `adidnsdump`
+- `bloodhound-python`
+- `GetUserSPNs.py`
+- `GetNPUsers.py`
 
 Missing optional tools do not stop the run. They are marked as `missing` in the final module status.
 
@@ -112,6 +117,18 @@ nmap -T5 -Pn <target> -v --script vuln
 
 If no open ports are parsed from the first scan, follow-up service and vuln scans are skipped where appropriate.
 
+Targeted UDP scan is optional:
+
+```bash
+python3 recon.py 10.10.11.10 --udp-scan
+```
+
+It scans the most useful UDP recon ports:
+
+```text
+53,123,161
+```
+
 ## Active Directory Workflow
 
 When AD is detected or forced with `--ad yes`, the tool runs relevant AD modules.
@@ -131,6 +148,9 @@ With credentials, it also runs authenticated checks such as:
 - SMB authenticated share listing
 - NetExec users, groups, shares, logged-on users
 - GPP password and autologin modules
+- BloodHound Python collection
+- Impacket `GetUserSPNs.py` for Kerberoast collection
+- Impacket `GetNPUsers.py` for ASREP roast collection
 - LDAP description checks
 - LDAP domain dump and ADIDNS dump when relevant tools are present
 
@@ -213,6 +233,8 @@ python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb --dry-run
 --command-timeout SECONDS    Timeout for enum commands, default 120
 --nmap-timeout SECONDS       Timeout for Nmap commands, default 900
 --vuln-timing T0-T5          Nmap timing profile for vuln scan, default T4
+--udp-scan                   Run targeted UDP scan on 53,123,161
+--resume                     Reuse existing logs and skip completed commands
 ```
 
 ## Password Spray

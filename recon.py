@@ -114,6 +114,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-rtt-timeout", default="1000ms", help="Nmap max RTT timeout for the full port scan")
     parser.add_argument("--max-retries", type=int, default=5, help="Nmap max retries for the full port scan")
     parser.add_argument("--vuln-timing", default="T4", choices=("T0", "T1", "T2", "T3", "T4", "T5"), help="Nmap timing profile for vuln scan")
+    parser.add_argument("--udp-scan", action="store_true", help="Run targeted UDP scan on common recon ports 53,123,161")
     parser.add_argument("--skip-full-scan", action="store_true", help="Skip the initial full TCP port scan")
     parser.add_argument("--skip-service-scan", action="store_true", help="Skip the follow-up service scan")
     parser.add_argument("--skip-vuln-scan", action="store_true", help="Skip the vuln script scan")
@@ -138,6 +139,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--command-timeout", type=int, default=120, help="Max seconds before killing a stuck enum command")
     parser.add_argument("--nmap-timeout", type=int, default=900, help="Max seconds before killing a stuck Nmap command")
     parser.add_argument("--fast", action="store_true", help="Skip slower AD modules and keep only high-signal quick checks")
+    parser.add_argument("--resume", action="store_true", help="Reuse existing command logs and skip commands already completed")
     parser.add_argument("--keep-logs", action="store_true", help="Keep all intermediate command logs instead of only report.txt")
     parser.add_argument("--html-report", action="store_true", help="Also write a formatted HTML report")
     parser.add_argument("--dry-run", action="store_true", help="Print commands and prepare output folders without executing scans")
@@ -230,13 +232,17 @@ def status_style(value: str) -> str:
 def redact_command(command: list[str]) -> list[str]:
     redacted: list[str] = []
     hide_next = False
-    secret_flags = {"-p", "--password", "-w", "--spray-password"}
+    tool_name = command[0] if command else ""
+    secret_flags = {"--password", "-w", "--spray-password"}
+    if tool_name not in {"nmap"}:
+        secret_flags.add("-p")
     for part in command:
         if hide_next:
             redacted.append("<redacted>")
             hide_next = False
             continue
         redacted_part = re.sub(r"%[^\s]+", "%<redacted>", part)
+        redacted_part = re.sub(r"([^/\s]+/[^:\s]+:)[^\s]+", r"\1<redacted>", redacted_part)
         redacted.append(redacted_part)
         if part in secret_flags:
             hide_next = True
@@ -321,7 +327,12 @@ def run_command(
     verbose_output: bool = False,
     show_commands: bool = False,
     timeout_seconds: int = 300,
+    resume: bool = False,
 ) -> CommandRecord:
+    if resume and output_file.exists() and output_file.stat().st_size > 0 and not dry_run:
+        print(color(f"[reuse] {name:<30} {output_file.name}", Style.GRAY))
+        return CommandRecord(name=name, command=command, output_file=str(output_file), returncode=0)
+
     if dry_run or show_commands:
         subsection(name)
         command_line(command)
@@ -371,6 +382,7 @@ def run_optional_command(
     verbose_output: bool = False,
     show_commands: bool = False,
     timeout_seconds: int = 300,
+    resume: bool = False,
 ) -> CommandRecord:
     tool_name = command[0]
     if not dry_run and not tool_exists(tool_name):
@@ -378,7 +390,7 @@ def run_optional_command(
         warn(f"{name}: missing tool '{tool_name}', skipping")
         output_file.write_text(f"[skipped] Missing tool: {tool_name}\n", encoding="utf-8")
         return CommandRecord(name=name, command=command, output_file=str(output_file), returncode=127)
-    return run_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds)
+    return run_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds, resume)
 
 
 def read_text(path: Path) -> str:
@@ -547,6 +559,9 @@ def build_ad_commands(args: argparse.Namespace, dc_ip: str) -> list[tuple[str, l
             add_command(commands, "NetExec SMB auth users", ["netexec", "smb", dc_ip, "-u", username, "-p", password, "--users"], "ad_nxc_smb_auth_users.txt")
             add_command(commands, "NetExec SMB auth shares", ["netexec", "smb", dc_ip, "-u", username, "-p", password, "--shares"], "ad_nxc_smb_auth_shares.txt")
             add_command(commands, "NetExec SMB loggedon users", ["netexec", "smb", dc_ip, "-u", username, "-p", password, "--loggedon-users"], "ad_nxc_smb_loggedon_users.txt")
+            if domain:
+                add_command(commands, "Impacket GetUserSPNs", ["GetUserSPNs.py", f"{domain}/{username}:{password}", "-dc-ip", dc_ip, "-request"], "ad_impacket_getuserspns.txt")
+                add_command(commands, "Impacket GetNPUsers", ["GetNPUsers.py", f"{domain}/{username}:{password}", "-dc-ip", dc_ip, "-request"], "ad_impacket_getnpusers.txt")
             add_command(commands, "NetExec GPP password", ["netexec", "smb", dc_ip, "-u", username, "-p", password, "-M", "gpp_password"], "ad_nxc_gpp_password.txt")
             add_command(commands, "NetExec GPP autologin", ["netexec", "smb", dc_ip, "-u", username, "-p", password, "-M", "gpp_autologin"], "ad_nxc_gpp_autologin.txt")
         return commands
@@ -591,6 +606,9 @@ def build_ad_commands(args: argparse.Namespace, dc_ip: str) -> list[tuple[str, l
         add_command(commands, "NetExec GPP autologin", ["netexec", "smb", dc_ip, "-u", username, "-p", password, "-M", "gpp_autologin"], "ad_nxc_gpp_autologin.txt")
 
         if domain:
+            add_command(commands, "BloodHound Python collection", ["bloodhound-python", "-u", username, "-p", password, "-d", domain, "-ns", dc_ip, "-c", "All", "--zip"], "ad_bloodhound_python.txt")
+            add_command(commands, "Impacket GetUserSPNs", ["GetUserSPNs.py", f"{domain}/{username}:{password}", "-dc-ip", dc_ip, "-request"], "ad_impacket_getuserspns.txt")
+            add_command(commands, "Impacket GetNPUsers", ["GetNPUsers.py", f"{domain}/{username}:{password}", "-dc-ip", dc_ip, "-request"], "ad_impacket_getnpusers.txt")
             add_command(commands, "LDAP domain dump", ["ldapdomaindump", f"ldap://{dc_ip}", "-u", f"{domain}\\{username}", "-p", password], "ad_ldapdomaindump.txt")
             add_command(commands, "ADIDNS dump", ["adidnsdump", "-u", f"{username}@{domain}", "-p", password, domain], "ad_adidnsdump.txt")
 
@@ -620,6 +638,7 @@ def run_ad_flow(
     verbose_output: bool,
     show_commands: bool,
     timeout_seconds: int,
+    resume: bool,
 ) -> list[CommandRecord]:
     records: list[CommandRecord] = []
     section("Active Directory flow")
@@ -638,11 +657,11 @@ def run_ad_flow(
             output_file.write_text("[skipped] Configure --user-wordlist and --spray-password to enable spray commands.\n", encoding="utf-8")
             records.append(CommandRecord(name=name, command=command, output_file=str(output_file), returncode=2))
             continue
-        records.append(run_optional_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds))
+        records.append(run_optional_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds, resume))
         if not dry_run:
             cached_findings = extract_findings(run_dir, [], [], [])
     if not args.fast:
-        records.extend(run_nonstandard_share_crawl(args, run_dir, dc_ip, dry_run, verbose_output, show_commands, timeout_seconds))
+        records.extend(run_nonstandard_share_crawl(args, run_dir, dc_ip, dry_run, verbose_output, show_commands, timeout_seconds, resume))
     return records
 
 
@@ -680,6 +699,7 @@ def run_nonstandard_share_crawl(
     verbose_output: bool,
     show_commands: bool,
     timeout_seconds: int,
+    resume: bool,
 ) -> list[CommandRecord]:
     findings = extract_findings(run_dir, [], [], [])
     shares = findings.get("nonstandard_shares", [])
@@ -708,6 +728,7 @@ def run_nonstandard_share_crawl(
                 verbose_output,
                 show_commands,
                 timeout_seconds,
+                resume,
             )
         )
     return records
@@ -809,6 +830,7 @@ def extract_findings(run_dir: Path, services: list[ServiceEntry], domains: list[
     )
     kerberoast_patterns = (
         r"(?im)^.*\bkerberoast(?:able|ing)?\b.*$",
+        r"(?im)^.*\$krb5tgs\$.*$",
         r"(?im)^.*\bservicePrincipalName\s*[:=]\s*\S+.*$",
         r"(?im)^.*\bSPN\s*[:=]\s*\S+.*$",
         r"(?im)^.*\bMSSQLSvc/[^\s]+.*$",
@@ -817,6 +839,7 @@ def extract_findings(run_dir: Path, services: list[ServiceEntry], domains: list[
     )
     asrep_patterns = (
         r"(?im)^.*\bASREP\b.*$",
+        r"(?im)^.*\$krb5asrep\$.*$",
         r"(?im)^.*\bAS-REP\b.*$",
         r"(?im)^.*\bDONT_REQ_PREAUTH\b.*$",
         r"(?im)^.*\bUF_DONT_REQUIRE_PREAUTH\b.*$",
@@ -1062,11 +1085,11 @@ def write_html_report(txt_report: Path, html_report: Path, summary: ReconSummary
     )
 
 
-def cleanup_intermediate_files(run_dir: Path, keep_logs: bool, keep_files: set[str]) -> None:
+def cleanup_intermediate_files(run_dir: Path, keep_logs: bool, keep_files: set[str], deletable_files: set[str]) -> None:
     if keep_logs:
         return
     for path in run_dir.iterdir():
-        if path.is_file() and path.name not in keep_files:
+        if path.is_file() and path.name in deletable_files and path.name not in keep_files:
             path.unlink()
 
 
@@ -1185,12 +1208,17 @@ def main() -> int:
     full_scan_file = run_dir / "nmap_ports.txt"
     service_scan_file = run_dir / "nmap_sVsC.txt"
     vuln_scan_file = run_dir / "nmap_vuln.txt"
+    udp_scan_file = run_dir / "nmap_udp_targeted.txt"
 
     open_ports: list[int] = []
     services: list[ServiceEntry] = []
 
     if args.skip_full_scan:
-        full_scan_file.write_text("[skipped]\n", encoding="utf-8")
+        if args.resume and full_scan_file.exists():
+            print(color(f"[reuse] Full TCP port scan        {full_scan_file.name}", Style.GRAY))
+            open_ports = parse_open_ports(read_text(full_scan_file))
+        else:
+            full_scan_file.write_text("[skipped]\n", encoding="utf-8")
     else:
         section("Nmap recon")
         full_scan_command = [
@@ -1206,8 +1234,14 @@ def main() -> int:
             "--max-retries",
             str(args.max_retries),
         ]
-        commands.append(run_command("Full TCP port scan", full_scan_command, full_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout))
+        commands.append(run_command("Full TCP port scan", full_scan_command, full_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout, args.resume))
         open_ports = parse_open_ports(read_text(full_scan_file))
+
+    if args.udp_scan:
+        udp_scan_command = ["nmap", "-sU", "-Pn", args.target, "-p", "53,123,161", "--max-retries", "2", "-v"]
+        commands.append(run_command("Targeted UDP scan", udp_scan_command, udp_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout, args.resume))
+    else:
+        udp_scan_file.write_text("[skipped]\n", encoding="utf-8")
 
     if args.skip_service_scan:
         service_scan_file.write_text("[skipped]\n", encoding="utf-8")
@@ -1227,7 +1261,7 @@ def main() -> int:
                 "-sC",
                 "-v",
             ]
-            commands.append(run_command("Service scan", service_scan_command, service_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout))
+            commands.append(run_command("Service scan", service_scan_command, service_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout, args.resume))
             services = parse_services(read_text(service_scan_file))
 
     if args.skip_vuln_scan:
@@ -1244,9 +1278,9 @@ def main() -> int:
             "--script",
             "vuln",
         ]
-        commands.append(run_command("Vuln script scan", vuln_scan_command, vuln_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout))
+        commands.append(run_command("Vuln script scan", vuln_scan_command, vuln_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout, args.resume))
 
-    combined_text = "\n".join([read_text(full_scan_file), read_text(service_scan_file), read_text(vuln_scan_file)])
+    combined_text = "\n".join([read_text(full_scan_file), read_text(service_scan_file), read_text(vuln_scan_file), read_text(udp_scan_file)])
     if not open_ports:
         open_ports = parse_open_ports(combined_text)
     if not services:
@@ -1263,7 +1297,7 @@ def main() -> int:
 
     if probable_ad and not args.skip_ad_enum:
         dc_ip = args.dc_ip or args.target
-        commands.extend(run_ad_flow(args, run_dir, dc_ip, args.dry_run, args.verbose_output, args.show_commands, args.command_timeout))
+        commands.extend(run_ad_flow(args, run_dir, dc_ip, args.dry_run, args.verbose_output, args.show_commands, args.command_timeout, args.resume))
 
     findings = extract_findings(run_dir, services, domain_names, dc_names)
 
@@ -1291,7 +1325,9 @@ def main() -> int:
     keep_files = {report_txt.name}
     if args.html_report:
         keep_files.add(report_html.name)
-    cleanup_intermediate_files(run_dir, args.keep_logs, keep_files)
+    deletable_files = {"nmap_ports.txt", "nmap_sVsC.txt", "nmap_vuln.txt", "nmap_udp_targeted.txt"}
+    deletable_files.update(Path(record.output_file).name for record in commands)
+    cleanup_intermediate_files(run_dir, args.keep_logs, keep_files, deletable_files)
     return 0
 
 
