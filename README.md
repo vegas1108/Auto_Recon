@@ -2,6 +2,8 @@
 
 Terminal-first Python recon automation for HTB-style labs and authorized pentest environments.
 
+The project is designed to run inside an Exegol container. Commands are called by their Exegol `PATH` names, for example `nmap`, `netexec`, `smbclient`, `rpcclient`, `ldapsearch`, and `enum4linux-ng`.
+
 Auto Recon runs a practical Nmap-first workflow, detects Windows/Linux and Active Directory indicators, launches conditional AD enumeration modules, highlights high-signal findings, and writes clean final reports.
 
 ## Features
@@ -24,6 +26,10 @@ Auto Recon runs a practical Nmap-first workflow, detects Windows/Linux and Activ
 
 ## Requirements
 
+Recommended environment:
+
+- Exegol with the usual offensive tooling available in `PATH`
+
 Required:
 
 - Python 3.10+
@@ -43,6 +49,26 @@ Optional tools used when available:
 - `adidnsdump`
 
 Missing optional tools do not stop the run. They are marked as `missing` in the final module status.
+
+## Exegol Usage
+
+Run the tool from inside your Exegol workspace:
+
+```bash
+python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb
+```
+
+The script does not hardcode tool locations. It expects Exegol tools to be callable directly from the shell, matching the standard Exegol environment:
+
+```bash
+nmap
+netexec
+smbclient
+rpcclient
+ldapsearch
+```
+
+If a tool is not present in the container, the module is skipped and reported as `missing`.
 
 ## Quick Start
 
