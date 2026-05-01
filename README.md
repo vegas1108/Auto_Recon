@@ -1,107 +1,230 @@
-# Check_auto
+# Auto Recon
 
-CLI Python pour lancer une base de recon terminal sur une cible HTB-like, sauvegarder les sorties `nmap` et résumer rapidement si la machine ressemble à du `windows`, du `linux` ou à un hôte avec indicateurs Active Directory.
+Terminal-first Python recon automation for HTB-style labs and authorized pentest environments.
 
-Le périmètre de cette première version reste volontairement limité aux scans d'inventaire et au parsing de résultats. Je n'ai pas inclus l'automatisation des parties offensives de la checklist comme le password spray, `kerbrute`, `netexec`, l'énumération authentifiée ou d'autres actions à impact.
+Auto Recon runs a practical Nmap-first workflow, detects Windows/Linux and Active Directory indicators, launches conditional AD enumeration modules, highlights high-signal findings, and writes clean final reports.
 
-## Lancer
+## Features
+
+- ASCII `vegas` banner and clean terminal dashboard output
+- Full TCP Nmap scan, service detection, default scripts, and vuln scripts
+- Windows/Linux heuristic detection from ports and service banners
+- Active Directory detection from SMB, Kerberos, LDAP, DNS, and related indicators
+- Conditional AD workflow with anonymous and authenticated checks
+- `enum4linux-ng`, `rpcclient`, `netexec`, `smbclient`, `ldapsearch`, DNS SRV, GPP and share checks
+- Smart de-duplication: equivalent user/share/group modules are skipped once useful data is already found
+- Non-standard SMB share highlighting
+- Lightweight recursive listing of non-standard shares without downloading files
+- Interesting file detection and categorization
+- Potential credential and GPP indicator highlighting
+- ADCS / Certificate Services detection
+- Kerberoastable, ASREP roastable, delegation, and privileged group indicators
+- Quiet by default: raw tool output is parsed but not printed live
+- Final `TXT` report by default, optional styled `HTML` report
+
+## Requirements
+
+Required:
+
+- Python 3.10+
+- `nmap`
+
+Optional tools used when available:
+
+- `enum4linux-ng`
+- `rpcclient`
+- `netexec`
+- `smbclient`
+- `ldapsearch`
+- `dig`
+- `lookupsid.py`
+- `kerbrute`
+- `ldapdomaindump`
+- `adidnsdump`
+
+Missing optional tools do not stop the run. They are marked as `missing` in the final module status.
+
+## Quick Start
 
 ```bash
 python3 recon.py 10.10.11.10
 ```
 
-Exemples utiles :
+Force AD mode:
 
 ```bash
-python3 recon.py 10.10.11.10 --os windows
-python3 recon.py 10.10.11.10 --os linux --min-rate 1500
-python3 recon.py 10.10.11.10 --dry-run
-python3 recon.py 10.10.11.10 --no-color
-python3 recon.py 10.10.11.10 --command-timeout 120
-python3 recon.py 10.10.11.10 --fast
-python3 recon.py 10.10.11.10 --html-report
-python3 recon.py 10.10.11.10 --keep-logs
-python3 recon.py 10.10.11.10 --ad yes --domain htb.local --dc-ip 10.10.11.10
-python3 recon.py 10.10.11.10 --ad yes --domain htb.local --username user --password pass
+python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb --dc-ip 10.10.11.10
 ```
 
-## Ce que fait l'outil
+Run with credentials:
 
-- affiche une bannière ASCII `vegas`
-- affiche une sortie terminal structurée avec couleurs, sections, commandes et statut final
-- genere par defaut un seul fichier final `report_<target>_<date>.txt`, directement dans le dossier de sortie
-- supprime les logs intermediaires apres parsing, sauf avec `--keep-logs`
-- peut aussi generer `report.html` avec `--html-report`
-- crée un dossier de session dans `runs/`
-- lance un scan TCP complet `nmap -p- -Pn`
-- parse les ports ouverts
-- attend 5 secondes puis lance `nmap -sV -sC` sur les ports trouvés
-- attend 5 secondes puis lance `nmap --script vuln`
-- tente d'extraire les indices de domaine et de DC depuis les sorties
-- si AD est détecté ou forcé avec `--ad yes`, lance les commandes AD de la checklist selon les infos disponibles
-- si `--username` et `--password` sont fournis, lance aussi les commandes authentifiées
-- avec creds, teste aussi RPC authentifié via `rpcclient` (`enumdomusers`, `querydispinfo`, `enumdomgroups`)
-- met en evidence les shares non standards, en separant `ADMIN$`, `C$`, `IPC$`, `NETLOGON`, `SYSVOL`, etc.
-- met en evidence les credentials potentiels trouves dans les logs, shares crawles et sorties GPP (`password`, `cpassword`, `pwd`, `secret`, etc.)
-- liste recursivement les shares non standards et met en evidence les fichiers interessants sans les telecharger
-- affiche une alerte dediee si des indices ADCS / Certificate Services sont trouves (`ADCS`, `CertSrv`, `CertEnroll`, `Certificate Authority`, etc.)
-- evite les doublons: si un outil trouve deja des users, shares ou groupes, les modules equivalents suivants sont marques `skipped`
-- met en avant les signaux AD importants comme Kerberoast, ASREP roast, delegation et groupes privilegies
-- ne fait plus de pauses fixes entre les scans
-- `--fast` garde uniquement les checks AD rapides et high-signal
-- utilise `enum4linux-ng` pour les étapes enum4linux
-- produit `summary.txt` et `summary.json`
+```bash
+python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb -u 'j.smith' -p 'Password123!'
+```
 
-Par défaut, la sortie complète des outils n'est pas affichée en live. Le terminal montre une progression courte puis le résumé final. Pour afficher les commandes :
+Generate an HTML report:
+
+```bash
+python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb --html-report
+```
+
+Fast mode:
+
+```bash
+python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb --fast
+```
+
+## Nmap Workflow
+
+The script runs the following Nmap flow without fixed sleeps between commands:
+
+```bash
+nmap -p- -Pn <target> -v --min-rate 1000 --max-rtt-timeout 1000ms --max-retries 5
+nmap -Pn <target> -p <open_ports> -sV -sC -v
+nmap -T5 -Pn <target> -v --script vuln
+```
+
+If no open ports are parsed from the first scan, follow-up service and vuln scans are skipped where appropriate.
+
+## Active Directory Workflow
+
+When AD is detected or forced with `--ad yes`, the tool runs relevant AD modules.
+
+Without credentials, it attempts anonymous/null-session checks such as:
+
+- SMB banner and share checks
+- RPC null user enumeration
+- enum4linux-ng enumeration
+- RID lookup checks
+- LDAP anonymous checks
+- DNS SRV DC discovery when a domain is provided
+
+With credentials, it also runs authenticated checks such as:
+
+- RPC authenticated `enumdomusers`, `querydispinfo`, and `enumdomgroups`
+- SMB authenticated share listing
+- NetExec users, groups, shares, logged-on users
+- GPP password and autologin modules
+- LDAP description checks
+- LDAP domain dump and ADIDNS dump when relevant tools are present
+
+## Reporting
+
+By default, each run writes one report file directly in the output directory:
+
+```text
+report_<target>_<timestamp>.txt
+```
+
+With `--html-report`, it also writes:
+
+```text
+report_<target>_<timestamp>.html
+```
+
+Intermediate command logs are used for parsing and deleted by default. Keep them with:
+
+```bash
+python3 recon.py 10.10.11.10 --keep-logs
+```
+
+The final report highlights:
+
+- detected OS and AD status
+- open ports and service map
+- domains and DC names
+- users and groups
+- non-standard shares
+- interesting files in non-standard shares
+- potential credentials
+- GPP findings
+- ADCS evidence
+- Kerberoastable and ASREP roastable indicators
+- delegation indicators
+- privileged group indicators
+- module status and skipped/missing/failed commands
+
+## Output Modes
+
+Show commands before execution:
 
 ```bash
 python3 recon.py 10.10.11.10 --show-commands
 ```
 
-Pour voir toute la sortie brute :
+Print raw tool output live:
 
 ```bash
 python3 recon.py 10.10.11.10 --verbose-output
 ```
 
-## Options AD
+Disable colors:
 
 ```bash
-python3 recon.py 10.10.11.10 --ad yes --domain htb.local --dc-ip 10.10.11.10
+python3 recon.py 10.10.11.10 --no-color
 ```
 
-Avec creds :
+Dry-run without executing commands:
 
 ```bash
-python3 recon.py 10.10.11.10 --ad yes --domain htb.local -u user -p 'pass'
+python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb --dry-run
 ```
 
-User enum Kerberos si tu fournis une wordlist :
+## Useful Options
+
+```text
+--os auto|windows|linux      Expected host family, default auto
+--ad auto|yes|no             Force or disable AD workflow
+--domain DOMAIN              AD domain, for example fluffy.htb
+--dc-ip IP                   Domain controller IP, defaults to target
+-u, --username USER          Username for authenticated checks
+-p, --password PASS          Password for authenticated checks
+--user-wordlist FILE         User wordlist for Kerberos enum or spray mode
+--share SHARE                Share to test with smbclient, default SYSVOL
+--fast                       Skip slower AD modules
+--keep-logs                  Keep raw command logs
+--html-report                Generate a styled HTML report
+--command-timeout SECONDS    Timeout for enum commands, default 120
+--nmap-timeout SECONDS       Timeout for Nmap commands, default 900
+```
+
+## Password Spray
+
+Spray mode is never enabled by default. It requires explicit opt-in:
 
 ```bash
-python3 recon.py 10.10.11.10 --ad yes --domain htb.local --user-wordlist /opt/jsmith.txt
+python3 recon.py 10.10.11.10 \
+  --ad yes \
+  --domain fluffy.htb \
+  --user-wordlist users.txt \
+  --enable-spray \
+  --spray-password 'Password123!'
 ```
 
-Le spray ne part jamais par défaut. Il faut l'activer explicitement :
+You can tune protocols and safety limits:
 
 ```bash
-python3 recon.py 10.10.11.10 --ad yes --domain htb.local --user-wordlist users.txt --enable-spray --spray-password 'Password123!'
+python3 recon.py 10.10.11.10 \
+  --ad yes \
+  --domain fluffy.htb \
+  --user-wordlist users.txt \
+  --enable-spray \
+  --spray-password 'Password123!' \
+  --spray-protocols smb,winrm \
+  --auth-fail-limit 3 \
+  --spray-delay 5
 ```
 
-## Fichiers générés
+## Safety Notes
 
-Par defaut, chaque session conserve seulement un fichier directement dans le dossier de sortie :
+Use this tool only on systems you own or are explicitly authorized to test, such as HTB labs or approved pentest scopes.
 
-- `report_<target>_<date>.txt`
+The script automates enumeration and reporting. Review the generated commands and outputs, especially when using credentials or spray mode.
 
-Avec `--html-report`, elle conserve aussi :
+## Project Files
 
-- `report_<target>_<date>.html`
-
-Avec `--keep-logs`, elle conserve aussi les sorties brutes des commandes.
-
-## Notes
-
-- dépendance requise : `nmap`
-- l'outil fonctionne uniquement en terminal
-- si `--os auto` est utilisé, la détection repose sur des heuristiques simples à partir des ports et bannières
+```text
+recon.py     Main CLI tool
+check.txt    Original operator checklist/reference
+README.md    Project documentation
+```
