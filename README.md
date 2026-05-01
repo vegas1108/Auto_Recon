@@ -6,7 +6,7 @@ Auto Recon runs a practical Nmap-first workflow, detects Windows/Linux and Activ
 
 ## Features
 
-- ASCII `vegas` banner and clean terminal dashboard output
+- Clean terminal dashboard output with concise module status
 - Full TCP Nmap scan, service detection, default scripts, and vuln scripts
 - Windows/Linux heuristic detection from ports and service banners
 - Active Directory detection from SMB, Kerberos, LDAP, DNS, and related indicators
@@ -225,6 +225,5 @@ The script automates enumeration and reporting. Review the generated commands an
 
 ```text
 recon.py     Main CLI tool
-check.txt    Original operator checklist/reference
 README.md    Project documentation
 ```

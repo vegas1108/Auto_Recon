@@ -15,11 +15,11 @@ from pathlib import Path
 
 
 ASCII_ART = r"""
- __     ________ ____    _    ____
- \ \   / / ____/ ___|  / \  / ___|
-  \ \ / /|  _|| |  _  / _ \\ \___ \
-   \ V / | |__| |_| |/ ___ \\ ___) |
-    \_/  |_____\____/_/   \_\____/
+ ____  _____ ____ ___  _   _   ______   __
+|  _ \| ____/ ___/ _ \| \ | | |  _ \ \ / /
+| |_) |  _|| |  | | | |  \| | | |_) \ V /
+|  _ <| |__| |__| |_| | |\  |_|  __/ | |
+|_| \_\_____\____\___/|_| \_(_)_|    |_|
 """
 
 
@@ -177,7 +177,7 @@ def print_banner() -> None:
     print(color("=" * width, Style.CYAN + Style.BOLD))
     print(color(ASCII_ART.rstrip(), Style.MAGENTA + Style.BOLD))
     print(color(" HTB / LAB RECON AUTOMATION ".center(width, "-"), Style.CYAN + Style.BOLD))
-    print(color(" operator: vegas | mode: terminal-first | output: curated ".center(width), Style.GRAY))
+    print(color(" terminal-first recon automation | output: curated ".center(width), Style.GRAY))
     print(color("=" * width, Style.CYAN + Style.BOLD))
 
 
