@@ -298,16 +298,6 @@ def command_state(record: CommandRecord) -> str:
     return f"exit {record.returncode}"
 
 
-def command_state_style(state: str) -> str:
-    if state == "ok":
-        return Style.GREEN + Style.BOLD
-    if state == "missing":
-        return Style.YELLOW + Style.BOLD
-    if state == "skipped":
-        return Style.GRAY
-    return Style.RED + Style.BOLD
-
-
 def print_finding_list(title: str, values: list[str], style: str = Style.CYAN, limit: int = 12) -> None:
     print(color(f"\n  {title}", Style.BOLD))
     if not values:
@@ -328,8 +318,10 @@ def run_command(
     show_commands: bool = False,
     timeout_seconds: int = 300,
     resume: bool = False,
+    cwd: Path | None = None,
+    resume_valid: bool = True,
 ) -> CommandRecord:
-    if resume and output_file.exists() and output_file.stat().st_size > 0 and not dry_run:
+    if resume and output_file.exists() and output_file.stat().st_size > 0 and resume_valid and not dry_run:
         print(color(f"[reuse] {name:<30} {output_file.name}", Style.GRAY))
         return CommandRecord(name=name, command=command, output_file=str(output_file), returncode=0)
 
@@ -345,7 +337,7 @@ def run_command(
         print(color("mode -> dry-run, command not executed", Style.YELLOW))
         return CommandRecord(name=name, command=command, output_file=str(output_file), returncode=0)
 
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as process:
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=str(cwd) if cwd else None) as process:
         try:
             output, _ = process.communicate(timeout=timeout_seconds)
             returncode = process.returncode
@@ -390,7 +382,8 @@ def run_optional_command(
         warn(f"{name}: missing tool '{tool_name}', skipping")
         output_file.write_text(f"[skipped] Missing tool: {tool_name}\n", encoding="utf-8")
         return CommandRecord(name=name, command=command, output_file=str(output_file), returncode=127)
-    return run_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds, resume)
+    cwd = output_file.parent if tool_name == "bloodhound-python" else None
+    return run_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds, resume, cwd)
 
 
 def read_text(path: Path) -> str:
@@ -406,6 +399,10 @@ def parse_open_ports(scan_text: str) -> list[int]:
         if match:
             ports.append(int(match.group(1)))
     return sorted(set(ports))
+
+
+def looks_like_nmap_log(scan_text: str) -> bool:
+    return "Nmap scan report" in scan_text or "Nmap done" in scan_text
 
 
 def parse_services(scan_text: str) -> list[ServiceEntry]:
@@ -1214,7 +1211,7 @@ def main() -> int:
     services: list[ServiceEntry] = []
 
     if args.skip_full_scan:
-        if args.resume and full_scan_file.exists():
+        if args.resume and full_scan_file.exists() and looks_like_nmap_log(read_text(full_scan_file)):
             print(color(f"[reuse] Full TCP port scan        {full_scan_file.name}", Style.GRAY))
             open_ports = parse_open_ports(read_text(full_scan_file))
         else:
@@ -1234,7 +1231,7 @@ def main() -> int:
             "--max-retries",
             str(args.max_retries),
         ]
-        commands.append(run_command("Full TCP port scan", full_scan_command, full_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout, args.resume))
+        commands.append(run_command("Full TCP port scan", full_scan_command, full_scan_file, args.dry_run, args.verbose_output, args.show_commands, args.nmap_timeout, args.resume, None, looks_like_nmap_log(read_text(full_scan_file))))
         open_ports = parse_open_ports(read_text(full_scan_file))
 
     if args.udp_scan:

@@ -174,6 +174,8 @@ Intermediate command logs are used for parsing and deleted by default. Keep them
 python3 recon.py 10.10.11.10 --keep-logs
 ```
 
+`bloodhound-python` is executed from the output directory so its generated JSON/ZIP artifacts are written next to the command log.
+
 The final report highlights:
 
 - detected OS and AD status
