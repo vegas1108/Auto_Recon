@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import re
 import shlex
 import shutil
 import subprocess
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -114,6 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-rate", type=int, default=1000, help="Nmap minimum packet rate for the full port scan")
     parser.add_argument("--max-rtt-timeout", default="1000ms", help="Nmap max RTT timeout for the full port scan")
     parser.add_argument("--max-retries", type=int, default=5, help="Nmap max retries for the full port scan")
+    parser.add_argument("--vuln-timing", default="T4", choices=("T0", "T1", "T2", "T3", "T4", "T5"), help="Nmap timing profile for vuln scan")
     parser.add_argument("--skip-full-scan", action="store_true", help="Skip the initial full TCP port scan")
     parser.add_argument("--skip-service-scan", action="store_true", help="Skip the follow-up service scan")
     parser.add_argument("--skip-vuln-scan", action="store_true", help="Skip the vuln script scan")
@@ -623,9 +623,10 @@ def run_ad_flow(
 ) -> list[CommandRecord]:
     records: list[CommandRecord] = []
     section("Active Directory flow")
+    cached_findings: dict[str, list[str]] | None = None
     for name, command, output_name in build_ad_commands(args, dc_ip):
         output_file = run_dir / output_name
-        skip_reason = duplicate_skip_reason(name, run_dir)
+        skip_reason = duplicate_skip_reason(name, cached_findings or {})
         if skip_reason and not dry_run:
             print(color(f"[skip] {name:<31} {skip_reason}", Style.GRAY))
             output_file.write_text(f"[skipped] {skip_reason}\n", encoding="utf-8")
@@ -638,16 +639,17 @@ def run_ad_flow(
             records.append(CommandRecord(name=name, command=command, output_file=str(output_file), returncode=2))
             continue
         records.append(run_optional_command(name, command, output_file, dry_run, verbose_output, show_commands, timeout_seconds))
+        if not dry_run:
+            cached_findings = extract_findings(run_dir, [], [], [])
     if not args.fast:
         records.extend(run_nonstandard_share_crawl(args, run_dir, dc_ip, dry_run, verbose_output, show_commands, timeout_seconds))
     return records
 
 
-def duplicate_skip_reason(command_name: str, run_dir: Path) -> str | None:
+def duplicate_skip_reason(command_name: str, findings: dict[str, list[str]]) -> str | None:
     purpose = command_purpose(command_name)
     if not purpose:
         return None
-    findings = extract_findings(run_dir, [], [], [])
     if purpose == "users" and findings.get("users"):
         return "users already found by previous module"
     if purpose == "groups" and findings.get("groups"):
@@ -807,8 +809,8 @@ def extract_findings(run_dir: Path, services: list[ServiceEntry], domains: list[
     )
     kerberoast_patterns = (
         r"(?im)^.*\bkerberoast(?:able|ing)?\b.*$",
-        r"(?im)^.*\bServicePrincipalName\b.*$",
-        r"(?im)^.*\bSPN\b.*$",
+        r"(?im)^.*\bservicePrincipalName\s*[:=]\s*\S+.*$",
+        r"(?im)^.*\bSPN\s*[:=]\s*\S+.*$",
         r"(?im)^.*\bMSSQLSvc/[^\s]+.*$",
         r"(?im)^.*\bHTTP/[^\s]+.*$",
         r"(?im)^.*\bHOST/[^\s]+.*$",
@@ -830,7 +832,8 @@ def extract_findings(run_dir: Path, services: list[ServiceEntry], domains: list[
     privileged_patterns = (
         r"(?im)^.*\bDomain Admins\b.*$",
         r"(?im)^.*\bEnterprise Admins\b.*$",
-        r"(?im)^.*\bAdministrators\b.*$",
+        r"(?im)^.*\b(?:Domain|Builtin|Local)\\Administrators\b.*$",
+        r"(?im)^.*\bmemberOf\s*[:=].*\bAdministrators\b.*$",
         r"(?im)^.*\bAccount Operators\b.*$",
         r"(?im)^.*\bBackup Operators\b.*$",
         r"(?im)^.*\bServer Operators\b.*$",
@@ -940,14 +943,6 @@ def classify_file(filename: str) -> str:
     if any(keyword in lower_name for keyword in ("backup", "bak")):
         return "backup"
     return "interesting"
-
-
-def write_summary_files(summary: ReconSummary, run_dir: Path) -> None:
-    if not (run_dir / ".keep_summary_json").exists():
-        return
-
-    json_path = run_dir / "summary.json"
-    json_path.write_text(json.dumps(asdict(summary), indent=2), encoding="utf-8")
 
 
 def write_html_report(txt_report: Path, html_report: Path, summary: ReconSummary) -> None:
@@ -1242,7 +1237,7 @@ def main() -> int:
     else:
         vuln_scan_command = [
             "nmap",
-            "-T5",
+            f"-{args.vuln_timing}",
             "-Pn",
             args.target,
             "-v",
@@ -1287,7 +1282,6 @@ def main() -> int:
         generated_at=datetime.now().isoformat(timespec="seconds"),
     )
 
-    write_summary_files(summary, run_dir)
     print_summary(summary)
     recorder.flush()
     sys.stdout = original_stdout

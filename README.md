@@ -212,6 +212,7 @@ python3 recon.py 10.10.11.10 --ad yes --domain fluffy.htb --dry-run
 --html-report                Generate a styled HTML report
 --command-timeout SECONDS    Timeout for enum commands, default 120
 --nmap-timeout SECONDS       Timeout for Nmap commands, default 900
+--vuln-timing T0-T5          Nmap timing profile for vuln scan, default T4
 ```
 
 ## Password Spray
