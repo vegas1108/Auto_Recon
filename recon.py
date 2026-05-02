@@ -455,7 +455,7 @@ def extract_domains(scan_text: str) -> list[str]:
     direct_matches: list[str] = []
     fqdn_matches: list[str] = []
     patterns = (
-        r"(?im)(?:domain(?: name)?|dns_domain_name|forest name|forest|workgroup)\s*[:=]\s*([A-Za-z0-9._-]+)",
+        r"(?im)(?:domain(?: name)?|dns_domain_name|forest name|forest)\s*[:=]\s*([A-Za-z0-9._-]+)",
         r"(?im)Subject Alternative Name:\s*DNS:([A-Za-z0-9._-]+)",
     )
     for pattern in patterns:
@@ -752,7 +752,7 @@ def build_follow_up(summary: ReconSummary) -> list[str]:
 
 
 def extract_findings(run_dir: Path, services: list[ServiceEntry], domains: list[str], dc_names: list[str]) -> dict[str, list[str]]:
-    combined = "\n".join(read_text(path) for path in sorted(run_dir.glob("*.txt")))
+    combined = "\n".join(read_text(path) for path in iter_command_logs(run_dir))
     findings: dict[str, list[str]] = {
         "interesting_services": [],
         "domains": domains[:],
@@ -901,7 +901,7 @@ def extract_interesting_files(run_dir: Path) -> list[str]:
     hot_keywords = ("password", "passwd", "pwd", "pass", "credential", "creds", "secret", "backup", "bak", "config", "vpn", "ssh", "key", "token", "admin")
     files: list[str] = []
 
-    for log_path in sorted(run_dir.glob("*.txt")):
+    for log_path in iter_share_crawl_logs(run_dir):
         share = share_name_from_log(log_path)
         current_dir = ""
         for raw_line in read_text(log_path).splitlines():
@@ -936,6 +936,22 @@ def extract_interesting_files(run_dir: Path) -> list[str]:
             files.append(f"[{category}] " + "/".join(location_parts))
 
     return ordered_unique(files)
+
+
+def iter_command_logs(run_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in sorted(run_dir.glob("*.txt"))
+        if not is_report_file(path)
+    ]
+
+
+def iter_share_crawl_logs(run_dir: Path) -> list[Path]:
+    return sorted(run_dir.glob("share_crawl_*.txt"))
+
+
+def is_report_file(path: Path) -> bool:
+    return path.name.startswith("report_") or path.name in {"report.txt", "summary.txt"}
 
 
 def share_name_from_log(log_path: Path) -> str:
@@ -1096,6 +1112,7 @@ def print_summary(summary: ReconSummary) -> None:
     ports = ", ".join(str(port) for port in summary.open_ports) or "none"
     domains = ", ".join(summary.domain_names) or "none"
     dc_names = ", ".join(summary.dc_names) or "none"
+    domain_dc = f"{domains} / {dc_names}" if summary.probable_active_directory else "none"
 
     ok_count = len([record for record in summary.commands if record.returncode == 0])
     skipped_count = len([record for record in summary.commands if record.returncode == 125])
@@ -1109,7 +1126,7 @@ def print_summary(summary: ReconSummary) -> None:
             summary.detected_os,
             detected_ad,
             ports,
-            f"{domains} / {dc_names}",
+            domain_dc,
         ]],
         title="Overview",
     )
@@ -1131,13 +1148,15 @@ def print_summary(summary: ReconSummary) -> None:
     print_table(["Port", "Proto", "Service", "Details"], service_rows, title="Service map")
 
     subsection("High signal findings")
-    print_finding_list("Kerberoastable indicators", summary.findings.get("kerberoastable", []), Style.RED + Style.BOLD, limit=20)
-    print_finding_list("ASREP roastable indicators", summary.findings.get("asrep_roastable", []), Style.RED + Style.BOLD, limit=20)
-    print_finding_list("Delegation indicators", summary.findings.get("delegation_findings", []), Style.RED + Style.BOLD, limit=20)
-    print_finding_list("Privileged group indicators", summary.findings.get("privileged_findings", []), Style.YELLOW + Style.BOLD, limit=20)
+    if summary.probable_active_directory:
+        print_finding_list("Kerberoastable indicators", summary.findings.get("kerberoastable", []), Style.RED + Style.BOLD, limit=20)
+        print_finding_list("ASREP roastable indicators", summary.findings.get("asrep_roastable", []), Style.RED + Style.BOLD, limit=20)
+        print_finding_list("Delegation indicators", summary.findings.get("delegation_findings", []), Style.RED + Style.BOLD, limit=20)
+        print_finding_list("Privileged group indicators", summary.findings.get("privileged_findings", []), Style.YELLOW + Style.BOLD, limit=20)
     print_finding_list("Services to inspect", summary.findings.get("interesting_services", []), Style.CYAN)
-    print_finding_list("Domains", summary.findings.get("domains", []), Style.GREEN + Style.BOLD)
-    print_finding_list("Domain controllers / hostnames", summary.findings.get("dc_names", []), Style.GREEN + Style.BOLD)
+    if summary.probable_active_directory:
+        print_finding_list("Domains", summary.findings.get("domains", []), Style.GREEN + Style.BOLD)
+        print_finding_list("Domain controllers / hostnames", summary.findings.get("dc_names", []), Style.GREEN + Style.BOLD)
     print_finding_list("Users", summary.findings.get("users", []), Style.MAGENTA)
     print_finding_list("Non-standard shares", summary.findings.get("nonstandard_shares", []), Style.YELLOW + Style.BOLD)
     print_finding_list("Common shares", summary.findings.get("common_shares", []), Style.GRAY)
